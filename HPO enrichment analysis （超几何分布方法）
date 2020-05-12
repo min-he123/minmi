@@ -1,0 +1,137 @@
+#【HPO富集分析】
+#1.加载需要的包
+# BiocManager::install("AnnotationHub")	
+# BiocManager::install("org.Hs.eg.db")	
+# BiocManager::install("clusterProfiler")	#用来进行富集分析的包
+library(AnnotationHub)
+library(org.Hs.eg.db)   
+library(clusterProfiler)
+library(dplyr)
+library(ggplot2)
+
+#2.导入肺部疾病的基因与HPO背景数据集并计算超几何分布中的N,m,x,k以及P值
+#导入肺部疾病的基因
+geneset_first<-read.table(file.choose(),header=T,sep="\t")#gene_result.txt  lung disease
+geneset_first<-geneset_first[geneset_first$Org_name=='Homo sapiens',]
+#bitr功能基因的ID转换
+df <- bitr(unique(geneset_first$Symbol), fromType = "SYMBOL",toType = c( "ENTREZID"),OrgDb = org.Hs.eg.db)
+#计算k:肺部疾病基因数（一共取出小球数）
+k<-length(unique(df$ENTREZID))
+#导入hpo数据
+background_data=read.table(file.choose(),header=T,quote="",sep='\t')#new_hpo.txt
+names(background_data)=c("diseaseId","gene-symbol","gene-id","HPO-ID","HPO-term-name")#200918
+
+#计算N：总的HPO基因的数目（总的小球数）
+N<-length(unique(background_data$`gene-id`))
+
+#计算m:hpo数据库中各个hpo子类的基因数目（黑球总数）
+hpo_id<-unique(background_data$`HPO-ID`)
+m_frame_total=data.frame(m_number=character())
+for(id in hpo_id){
+  hpo_category<-unique(background_data[background_data$`HPO-ID`==id,])
+  m_value<-nrow(hpo_category)
+  m_number<-c(m_value)
+  m_frame<-data.frame(m_number)
+  m_frame_total<-rbind(m_frame_total,m_frame)
+}
+hpo_id_frame<-data.frame(hpo_id)
+sum_data<-cbind(hpo_id_frame,m_frame_total)
+
+#计算x：也就是k中属于m的数目（取出的k个球中有x个黑球）
+sample_geneid<-unique(df$ENTREZID)
+x_frame_total=data.frame(x_number=character())
+for(id in hpo_id){
+  hpo_category<-unique(background_data[background_data$`HPO-ID`==id,])
+  hpo_geneid<-hpo_category$`gene-id`
+  x_number<-c(sum(sample_geneid %in% hpo_geneid))
+  x_frame<-data.frame(x_number)
+  x_frame_total<-rbind(x_frame_total,x_frame)
+}
+sum_data<-cbind(sum_data,x_frame_total)
+
+#计算pvalue
+p_value<-c()
+for(id in hpo_id){
+  p_category<-unique(sum_data[which(sum_data$hpo_id==id),])
+  m=p_category$m_number
+  x=p_category$x_number
+  p=phyper(x-1,as.numeric(m),N-m,k,lower.tail=FALSE)
+  p_value<-c(p_value,p)
+}
+p_value_frame<-data.frame(p_value)
+p_data<-cbind(hpo_id_frame,p_value_frame)
+
+3.对P值FDR矫正进行筛选，并找出基因富集结果的HPO term.
+#对pvalue进行fdr矫正,筛选p_adjust<0.05的数据
+p_adjust<-p.adjust(p_value_frame$p_value,method ="BH",n=length(p_value_frame$p_value))
+p_data<-cbind(p_data,p_adjust)
+hpo_p_0.05<-p_data[p_data$p_adjust<0.05,]
+hpo_p_0.05_order<-hpo_p_0.05[order(hpo_p_0.05$p_adjust),]
+
+#找出对应的hpo_term_name
+hpo_term_name= as.character(c())
+for(i in 1:nrow(hpo_p_0.05_order))
+{
+  a=as.character(background_data[background_data$`HPO-ID`==hpo_p_0.05_order$hpo_id[i],]$`HPO-term-name`[1])
+  hpo_term_name=c(hpo_term_name,a)
+}
+hpo_p_0.05_order<-cbind(hpo_p_0.05_order,hpo_term_name)
+
+#找出对应的x值
+count_x<-as.numeric(c())
+for(i in 1:nrow(hpo_p_0.05_order))
+{
+  b=as.numeric(sum_data[sum_data$hpo_id==hpo_p_0.05_order$hpo_id[i],]$x_number)
+  count_x=c(count_x,b)
+}
+hpo_p_0.05_order<-cbind(hpo_p_0.05_order,count_x)
+
+#计算s：每个term中基因数
+s<-c()
+for(i in hpo_p_0.05_order$hpo_id)
+{
+  a=nrow(background_data[background_data$`HPO-ID`==i,])
+  s=c(s,a)
+}
+hpo_p_0.05_order<-cbind(hpo_p_0.05_order,s)
+
+
+4.对结果进行可视化作图
+#summary
+hpo_summary<-data.frame(HPO_ID=hpo_p_0.05_order$hpo_id,
+                        Description=hpo_p_0.05_order$hpo_term_name,
+                        p_value=hpo_p_0.05_order$p_value,
+                        p_adjust=hpo_p_0.05_order$p_adjust,
+                        Count=hpo_p_0.05_order$count_x,
+                        GeneRatio=hpo_p_0.05_order$count_x/k,
+                        Rich_factor=hpo_p_0.05_order$count_x/hpo_p_0.05_order$s)
+write.csv(hpo_summary,"C:/Users/AISUS/Documents/BioTMandKD/HPO/hpo_summary_lung disease.csv",row.names=F)
+
+#绘制bar plot
+data=hpo_summary
+ggplot(data=data,aes(x=Description,y=Count,fill=p_adjust))+
+  geom_bar(stat="identity")+scale_x_discrete(limits=data$Description[1:18])+
+  coord_flip()+labs(title="EnrichmentHPO")+
+  theme(plot.title=element_text(size=20,face = "bold"),
+        axis.text=element_text(size=12),
+        axis.title.x=element_text(size=14),
+        axis.title.y=element_text(size=16),
+        panel.background=element_rect(fill="white",colour="gray"))+
+  scale_fill_gradient(low='blue',high='red')
+
+#绘制泡泡图
+#以p_adjust为横轴
+ggplot(data,aes(p_adjust,Description))+
+  geom_point(aes(size=Count,color=p_adjust))+
+  scale_color_gradient(low="green",high="red")+
+  theme(axis.text.y=element_text(size=14))
+#以GeneRatio为横轴
+ggplot(data,aes(GeneRatio,Description))+
+  geom_point(aes(size=Count,color=p_adjust))+
+  scale_color_gradient(low="green",high="red")+
+  theme(axis.text.y=element_text(size=14))
+#以Rich_factor为横轴
+ggplot(data,aes(Rich_factor,Description))+
+  geom_point(aes(size=Count,color=p_adjust))+
+  scale_color_gradient(low="green",high="red")+
+  theme(axis.text.y=element_text(size=14))
