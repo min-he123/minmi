@@ -1,0 +1,2 @@
+# minmi
+To share code
